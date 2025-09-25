@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
 
         # Режим 1 → переходим в режим 2 (загружаем PNG)
         elif self.current_mode == 1:
-            png_path = "PyQt_labs/lab_1/kirieshki.png"  # Имя файла с твоей картинкой
+            png_path = "PyQt_labs/lab_1/kirieshki.png"  # Имя файла с твоей картинкой, если не работает надо указать полный путь к файлу
             if os.path.exists(png_path):
                 # Устанавливаем PNG как фон
                 self.setStyleSheet(f"background-image: url({png_path}); background-repeat: no-repeat; background-position: center;")
