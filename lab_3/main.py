@@ -29,10 +29,11 @@ class DatabaseWorker(QThread):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
     
-    def __init__(self, query, params=None):
+    def __init__(self, query, params=None, is_write_operation=False):
         super().__init__()
         self.query = query
         self.params = params or []
+        self.is_write_operation = is_write_operation
         
     def run(self):
         try:
@@ -41,12 +42,21 @@ class DatabaseWorker(QThread):
             cursor = conn.cursor()
             
             cursor.execute(self.query, self.params)
-            result = cursor.fetchall()
+            
+            if self.is_write_operation:
+                # Для операций записи (INSERT, UPDATE, DELETE)
+                conn.commit()
+                result = [cursor.rowcount]  # Возвращаем количество измененных строк
+                print(f"База данных: операция записи затронула {cursor.rowcount} записей")
+            else:
+                # Для операций чтения (SELECT)
+                result = cursor.fetchall()
             
             conn.close()
             self.finished.emit(result)
             
         except Exception as e:
+            print(f"Ошибка базы данных: {e}")
             self.error.emit(str(e))
 
 
@@ -110,6 +120,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PyQt5 Database Application")
         self.setGeometry(100, 100, 1200, 800)
         
+        # Хранилище для активных потоков
+        self.active_workers = []
+        
         # Инициализация базы данных
         DatabaseManager.init_database()
         
@@ -120,6 +133,46 @@ class MainWindow(QMainWindow):
         
         # Подключение сигналов
         self.connect_signals()
+        
+        # Тест подключения к БД
+        self.test_database_connection()
+        
+    def create_worker(self, query, params=None, is_write_operation=False):
+        """Безопасное создание рабочего потока"""
+        worker = DatabaseWorker(query, params, is_write_operation)
+        
+        # Добавляем в список активных потоков
+        self.active_workers.append(worker)
+        
+        # Автоматически удаляем поток после завершения
+        worker.finished.connect(lambda: self.remove_from_active_list(worker))
+        worker.error.connect(lambda: self.remove_from_active_list(worker))
+        
+        return worker
+        
+    def remove_from_active_list(self, worker):
+        """Удаляем поток из списка активных"""
+        if worker in self.active_workers:
+            self.active_workers.remove(worker)
+        # Планируем удаление объекта
+        worker.deleteLater()
+        
+    def closeEvent(self, event):
+        """Корректное завершение всех потоков при закрытии приложения"""
+        # Ждем завершения всех активных потоков
+        for worker in self.active_workers:
+            if worker.isRunning():
+                worker.quit()
+                worker.wait(1000)  # Ждем до 1 секунды
+        
+        reply = QMessageBox.question(self, 'Подтверждение', 
+                                   'Вы уверены, что хотите выйти?',
+                                   QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
         
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
@@ -461,7 +514,7 @@ class MainWindow(QMainWindow):
         else:
             query = "SELECT * FROM employees"
             
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_query1_finished)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -475,7 +528,7 @@ class MainWindow(QMainWindow):
         GROUP BY department
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_query2_finished)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -490,7 +543,7 @@ class MainWindow(QMainWindow):
         ORDER BY salary DESC
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_query3_finished)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -593,7 +646,7 @@ class MainWindow(QMainWindow):
             except ValueError:
                 pass
                 
-        self.worker = DatabaseWorker(query, params)
+        self.worker = self.create_worker(query, params)
         self.worker.finished.connect(self.on_filter_finished)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -622,7 +675,7 @@ class MainWindow(QMainWindow):
         ORDER BY avg_salary DESC
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_department_report_finished)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -655,7 +708,7 @@ class MainWindow(QMainWindow):
         ORDER BY salary DESC
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_salary_report_finished)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -697,17 +750,6 @@ class MainWindow(QMainWindow):
                          "- PyQt5\n"
                          "- SQLite\n"
                          "- Многопоточность")
-        
-    def closeEvent(self, event):
-        """Обработка закрытия приложения"""
-        reply = QMessageBox.question(self, 'Подтверждение', 
-                                   'Вы уверены, что хотите выйти?',
-                                   QMessageBox.Yes | QMessageBox.No)
-        
-        if reply == QMessageBox.Yes:
-            event.accept()
-        else:
-            event.ignore()
 
     # Функции для графиков
     def show_salary_chart(self):
@@ -724,7 +766,7 @@ class MainWindow(QMainWindow):
         ORDER BY avg_salary DESC
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_salary_chart_data_ready)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -773,7 +815,7 @@ class MainWindow(QMainWindow):
         ORDER BY count DESC
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_pie_chart_data_ready)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -820,7 +862,7 @@ class MainWindow(QMainWindow):
         ORDER BY hire_date
         """
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_hire_chart_data_ready)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -872,23 +914,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Зарплата должна быть числом!")
             return
             
+        self.status_bar.showMessage("Добавление сотрудника...")
+        
         query = """
         INSERT INTO employees (name, position, department, salary, hire_date)
         VALUES (?, ?, ?, ?, ?)
         """
         
-        self.worker = DatabaseWorker(query, [name, position, department, salary_val, hire_date])
+        self.worker = self.create_worker(query, [name, position, department, salary_val, hire_date], is_write_operation=True)
         self.worker.finished.connect(self.on_employee_added)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
         
     def on_employee_added(self, result):
         """Обработка добавления сотрудника"""
-        QMessageBox.information(self, "Успех", "Сотрудник успешно добавлен!")
-        self.clear_edit_form()
-        self.refresh_edit_table()
-        self.refresh_data()  # Обновляем основную таблицу
-        self.status_bar.showMessage("Сотрудник добавлен")
+        if result and result[0] > 0:
+            QMessageBox.information(self, "Успех", "Сотрудник успешно добавлен!")
+            self.clear_edit_form()
+            self.refresh_edit_table()
+            self.refresh_data()  # Обновляем основную таблицу
+            self.status_bar.showMessage("Сотрудник добавлен")
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось добавить сотрудника")
         
     def clear_edit_form(self):
         """Очистка формы редактирования"""
@@ -902,7 +949,7 @@ class MainWindow(QMainWindow):
         """Обновление таблицы редактирования"""
         query = "SELECT * FROM employees ORDER BY id"
         
-        self.worker = DatabaseWorker(query)
+        self.worker = self.create_worker(query)
         self.worker.finished.connect(self.on_edit_table_data_ready)
         self.worker.error.connect(self.on_query_error)
         self.worker.start()
@@ -931,18 +978,22 @@ class MainWindow(QMainWindow):
                                    QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
+            self.status_bar.showMessage(f"Удаление сотрудника с ID {employee_id}...")
             query = "DELETE FROM employees WHERE id = ?"
-            self.worker = DatabaseWorker(query, [employee_id])
+            self.worker = self.create_worker(query, [employee_id], is_write_operation=True)
             self.worker.finished.connect(self.on_employee_deleted)
             self.worker.error.connect(self.on_query_error)
             self.worker.start()
             
     def on_employee_deleted(self, result):
         """Обработка удаления сотрудника"""
-        QMessageBox.information(self, "Успех", "Сотрудник удален!")
-        self.refresh_edit_table()
-        self.refresh_data()  # Обновляем основную таблицу
-        self.status_bar.showMessage("Сотрудник удален")
+        if result and result[0] > 0:
+            QMessageBox.information(self, "Успех", "Сотрудник удален!")
+            self.refresh_edit_table()
+            self.refresh_data()  # Обновляем основную таблицу
+            self.status_bar.showMessage("Сотрудник удален")
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось удалить сотрудника")
         
     def delete_selected_employee(self):
         """Удаление выбранного сотрудника"""
@@ -954,6 +1005,20 @@ class MainWindow(QMainWindow):
                 self.delete_employee(employee_id)
         else:
             QMessageBox.warning(self, "Предупреждение", "Выберите сотрудника для удаления!")
+
+    def test_database_connection(self):
+        """Тестовая функция для проверки подключения к БД"""
+        try:
+            conn = sqlite3.connect('database.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM employees")
+            count = cursor.fetchone()[0]
+            conn.close()
+            self.status_bar.showMessage(f"Подключение к БД успешно. Всего записей: {count}")
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка БД", f"Ошибка подключения к базе данных: {e}")
+            return False
 
 
 def main():
